@@ -15,6 +15,7 @@ LOG_RETENTION_DAYS="${LOG_RETENTION_DAYS:-7}"
 TMP_RETENTION_DAYS="${TMP_RETENTION_DAYS:-3}"
 JOURNAL_TARGET_SIZE="${JOURNAL_TARGET_SIZE:-500M}"
 B2GOV_LOG_PATTERN="${B2GOV_LOG_PATTERN:-/var/log/b2gov/batchdb.*.out.*}"
+SNAP_CACHE_DIR="${SNAP_CACHE_DIR:-/var/lib/snaps/cache}"
 
 log() {
   local timestamp
@@ -100,6 +101,41 @@ cleanup_b2gov_logs() {
   log "Removed b2gov files."
 }
 
+cleanup_snaps() {
+  if ! command -v snap >/dev/null 2>&1; then
+    log "snap command not found; skipping snap cleanup."
+    return 0
+  }
+
+  local disabled
+  disabled="$(snap list --all 2>/dev/null | awk '/disabled/{print $1, $3}')"
+  if [[ -n "$disabled" ]]; then
+    log "Removing disabled snap revisions:"
+    while read -r name revision; do
+      [[ -z "$name" || -z "$revision" ]] && continue
+      if [[ "$DRY_RUN" == "true" ]]; then
+        log "DRY_RUN=true; would run: snap remove ${name} --revision=${revision}"
+        continue
+      fi
+      log "snap remove ${name} --revision=${revision}"
+      snap remove "$name" --revision="$revision" || log "Failed to remove ${name} revision ${revision}"
+    done <<< "$disabled"
+  else
+    log "No disabled snaps found."
+  fi
+
+  if [[ -d "$SNAP_CACHE_DIR" ]]; then
+    log "Clearing snap cache directory ${SNAP_CACHE_DIR}"
+    if [[ "$DRY_RUN" == "true" ]]; then
+      log "DRY_RUN=true; would delete contents of ${SNAP_CACHE_DIR}"
+    else
+      find "$SNAP_CACHE_DIR" -mindepth 1 -print -delete
+    fi
+  else
+    log "Snap cache directory ${SNAP_CACHE_DIR} not found; skipping."
+  fi
+}
+
 main() {
   require_root
   mkdir -p "$(dirname "$LOG_FILE")"
@@ -120,8 +156,8 @@ main() {
   cleanup_logs
   cleanup_tmp_dirs
   cleanup_b2gov_logs
+  cleanup_snaps
   run_cmd "truncate rotated logs" logrotate -f /etc/logrotate.conf
-  run_cmd "docker prune" docker system prune -af --volumes
 
   log "Cleanup workflow finished."
   usage="$(percent_used)"
